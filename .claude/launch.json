@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "crawler",
+      "runtimeExecutable": "/Users/hakkiyusufuysal/crawler/venv/bin/python",
+      "runtimeArgs": ["app.py"],
+      "port": 8080
+    }
+  ]
+}
