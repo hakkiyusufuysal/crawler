@@ -3,9 +3,10 @@ SQLite persistence layer.
 Uses WAL mode for concurrent reads (search) during writes (indexing).
 """
 
+import json
+import math
 import sqlite3
 import threading
-import json
 import time
 from pathlib import Path
 
@@ -178,13 +179,13 @@ class Storage:
             )
             self._write_conn.commit()
 
-    def search(self, tokens: list[str], limit: int = 50) -> list[dict]:
+    def search(self, tokens: list[str], limit: int = 50, offset: int = 0) -> dict:
         """
         Search the inverted index using TF-IDF scoring.
-        Returns list of {url, origin, depth, score, title}.
+        Returns {results: [...], total: int, limit: int, offset: int}.
         """
         if not tokens:
-            return []
+            return {"results": [], "total": 0, "limit": limit, "offset": offset}
 
         conn = self._read_conn()
         try:
@@ -199,15 +200,16 @@ class Storage:
             ).fetchall()
             df_map = {row["token"]: row["df"] for row in df_rows}
 
-            # Score each document
-            scores: dict[str, float] = {}
+            # Precompute IDF for each token
+            idf_map: dict[str, float] = {}
             for token in tokens:
                 df = df_map.get(token, 0)
-                if df == 0:
-                    continue
-                import math
-                idf = math.log(total_docs / df)
+                if df > 0:
+                    idf_map[token] = math.log(total_docs / df)
 
+            # Score each document
+            scores: dict[str, float] = {}
+            for token, idf in idf_map.items():
                 rows = conn.execute(
                     "SELECT url, tf, field FROM inverted_index WHERE token=?",
                     (token,),
@@ -217,12 +219,16 @@ class Storage:
                     scores[row["url"]] = scores.get(row["url"], 0) + row["tf"] * idf * weight
 
             if not scores:
-                return []
+                return {"results": [], "total": 0, "limit": limit, "offset": offset}
 
-            # Get page metadata and sort by score
-            sorted_urls = sorted(scores, key=scores.get, reverse=True)[:limit]
+            # Sort by score, then paginate
+            sorted_urls = sorted(scores, key=scores.get, reverse=True)
+            total_results = len(sorted_urls)
+            page_urls = sorted_urls[offset:offset + limit]
+
+            # Get page metadata
             results = []
-            for url in sorted_urls:
+            for url in page_urls:
                 page = conn.execute(
                     "SELECT p.url, p.title, p.depth, p.crawl_job_id, j.origin "
                     "FROM pages p JOIN crawl_jobs j ON p.crawl_job_id = j.id "
@@ -237,7 +243,12 @@ class Storage:
                         "title": page["title"],
                         "score": round(scores[url], 4),
                     })
-            return results
+            return {
+                "results": results,
+                "total": total_results,
+                "limit": limit,
+                "offset": offset,
+            }
         finally:
             conn.close()
 

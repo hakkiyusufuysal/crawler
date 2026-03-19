@@ -144,11 +144,14 @@ class Indexer:
         max_queue_depth: int = 10_000,
         rate_per_domain: float = 2.0,
         request_timeout: int = 10,
+        verify_ssl: bool = True,
+        max_retries: int = 3,
     ):
         self.storage = storage
         self.max_workers = max_workers
         self.max_queue_depth = max_queue_depth
         self.request_timeout = request_timeout
+        self.max_retries = max_retries
 
         self._rate_limiter = DomainRateLimiter(rate_per_domain)
         self._robots = RobotsCache(self.USER_AGENT)
@@ -159,10 +162,18 @@ class Indexer:
         self._active_jobs: dict[int, CrawlJob] = {}
         self._jobs_lock = threading.Lock()
 
-        # SSL context that doesn't verify (many sites have cert issues)
-        self._ssl_ctx = ssl.create_default_context()
-        self._ssl_ctx.check_hostname = False
-        self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        # SSL context — verify by default, fallback to unverified on cert errors
+        if verify_ssl:
+            self._ssl_ctx = ssl.create_default_context()
+        else:
+            self._ssl_ctx = ssl.create_default_context()
+            self._ssl_ctx.check_hostname = False
+            self._ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        # Lenient SSL context used as fallback when strict fails
+        self._ssl_ctx_lenient = ssl.create_default_context()
+        self._ssl_ctx_lenient.check_hostname = False
+        self._ssl_ctx_lenient.verify_mode = ssl.CERT_NONE
 
     def start_crawl(self, origin: str, max_depth: int, resume_job_id: int | None = None) -> CrawlJob:
         """Start a new crawl job in background threads."""
@@ -349,28 +360,76 @@ class Indexer:
                 self.storage.save_frontier(frontier_batch)
 
     def _fetch(self, url: str) -> str | None:
-        """Fetch URL using urllib (stdlib). Returns HTML string or None."""
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": self.USER_AGENT},
-            )
-            with urllib.request.urlopen(
-                req, timeout=self.request_timeout, context=self._ssl_ctx
-            ) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                if "text/html" not in content_type and "text/xhtml" not in content_type:
+        """
+        Fetch URL using urllib (stdlib). Returns HTML string or None.
+        Retries with exponential backoff on transient errors (429, 503, 5xx).
+        Falls back to lenient SSL on certificate errors.
+        """
+        last_error = None
+        for attempt in range(self.max_retries):
+            ctx = self._ssl_ctx
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": self.USER_AGENT},
+                )
+                with urllib.request.urlopen(
+                    req, timeout=self.request_timeout, context=ctx
+                ) as resp:
+                    content_type = resp.headers.get("Content-Type", "")
+                    if "text/html" not in content_type and "text/xhtml" not in content_type:
+                        return None
+                    # Read up to 2MB
+                    data = resp.read(2 * 1024 * 1024)
+                    charset = resp.headers.get_content_charset() or "utf-8"
+                    return data.decode(charset, errors="replace")
+
+            except ssl.SSLCertVerificationError:
+                # Retry once with lenient SSL context
+                logger.debug(f"SSL cert error for {url}, retrying without verification")
+                try:
+                    req = urllib.request.Request(
+                        url, headers={"User-Agent": self.USER_AGENT},
+                    )
+                    with urllib.request.urlopen(
+                        req, timeout=self.request_timeout, context=self._ssl_ctx_lenient
+                    ) as resp:
+                        content_type = resp.headers.get("Content-Type", "")
+                        if "text/html" not in content_type and "text/xhtml" not in content_type:
+                            return None
+                        data = resp.read(2 * 1024 * 1024)
+                        charset = resp.headers.get_content_charset() or "utf-8"
+                        return data.decode(charset, errors="replace")
+                except Exception as e:
+                    logger.debug(f"SSL fallback also failed {url}: {e}")
                     return None
-                # Read up to 2MB
-                data = resp.read(2 * 1024 * 1024)
-                charset = resp.headers.get_content_charset() or "utf-8"
-                return data.decode(charset, errors="replace")
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as e:
-            logger.debug(f"Fetch failed {url}: {e}")
-            return None
-        except Exception as e:
-            logger.debug(f"Unexpected fetch error {url}: {e}")
-            return None
+
+            except urllib.error.HTTPError as e:
+                last_error = e
+                # Retry on 429 (rate limited) and 5xx (server errors)
+                if e.code == 429 or 500 <= e.code < 600:
+                    wait = min(2 ** attempt, 8)  # 1s, 2s, 4s (capped at 8s)
+                    logger.debug(f"HTTP {e.code} for {url}, retry {attempt+1}/{self.max_retries} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                # 4xx client errors (except 429) — don't retry
+                logger.debug(f"HTTP {e.code} for {url}, not retrying")
+                return None
+
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                last_error = e
+                # Network errors — retry with backoff
+                wait = min(2 ** attempt, 8)
+                logger.debug(f"Fetch error {url}: {e}, retry {attempt+1}/{self.max_retries} in {wait}s")
+                time.sleep(wait)
+                continue
+
+            except Exception as e:
+                logger.debug(f"Unexpected fetch error {url}: {e}")
+                return None
+
+        logger.debug(f"Fetch failed after {self.max_retries} retries {url}: {last_error}")
+        return None
 
     def _index_page(self, url: str, title: str, text: str):
         """Build inverted index entries for a page."""

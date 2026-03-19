@@ -351,15 +351,19 @@
             refreshStatus();
         }
 
-        async function doSearch() {
+        let searchOffset = 0;
+        const SEARCH_LIMIT = 20;
+
+        async function doSearch(offset = 0) {
             const q = document.getElementById('searchQuery').value.trim();
             if (!q) return;
 
+            searchOffset = offset;
             const container = document.getElementById('searchResults');
             container.innerHTML = '<div class="empty-state">Searching...</div>';
 
             try {
-                const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}`);
+                const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}&offset=${offset}`);
                 const data = await res.json();
 
                 if (data.results.length === 0) {
@@ -367,7 +371,7 @@
                     return;
                 }
 
-                container.innerHTML = data.results.map(r => `
+                const resultsHtml = data.results.map(r => `
                     <div class="result-item">
                         <div class="result-title">${escapeHtml(r.title || 'Untitled')}</div>
                         <div class="result-url"><a href="${r.relevant_url}" target="_blank">${r.relevant_url}</a></div>
@@ -376,6 +380,18 @@
                         </div>
                     </div>
                 `).join('');
+
+                const hasMore = (offset + data.results.length) < data.total;
+                const hasPrev = offset > 0;
+                const pageInfo = `<div style="padding:12px;font-size:12px;color:#888;">
+                    Showing ${offset + 1}–${offset + data.results.length} of ${data.total} results
+                </div>`;
+                const pagination = `<div style="padding:12px;display:flex;gap:8px;justify-content:center;">
+                    ${hasPrev ? `<button class="secondary" onclick="doSearch(${offset - SEARCH_LIMIT})" style="padding:6px 14px;font-size:13px;">Previous</button>` : ''}
+                    ${hasMore ? `<button class="secondary" onclick="doSearch(${offset + SEARCH_LIMIT})" style="padding:6px 14px;font-size:13px;">Next</button>` : ''}
+                </div>`;
+
+                container.innerHTML = pageInfo + resultsHtml + pagination;
             } catch (e) {
                 container.innerHTML = '<div class="empty-state">Search failed: ' + e.message + '</div>';
             }

@@ -90,11 +90,17 @@ def search():
     if not query:
         return jsonify({"error": "query parameter 'q' is required"}), 400
 
-    results = searcher.search(query)
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = max(int(request.args.get("offset", 0)), 0)
+
+    data = searcher.search(query, limit=limit, offset=offset)
     return jsonify({
         "query": query,
-        "count": len(results),
-        "results": results,
+        "count": len(data["results"]),
+        "total": data["total"],
+        "limit": data["limit"],
+        "offset": data["offset"],
+        "results": data["results"],
     })
 
 
