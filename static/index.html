@@ -512,10 +512,27 @@
         // ── Job Detail Canvas ──
         let canvasJobId = null;
         let canvasPolling = null;
+        let canvasLastTotal = 0;    // track last known total to diff
+        let canvasCurrentOffset = 0;
         const CANVAS_LIMIT = 50;
+
+        function renderUrlRow(p) {
+            const row = document.createElement('div');
+            row.className = 'url-row';
+            row.innerHTML = `
+                <span class="depth-badge">d${p.depth}</span>
+                <div style="flex:1;min-width:0;">
+                    <div class="url-title">${escapeHtml(p.title || 'Untitled')}</div>
+                    <a href="${p.url}" target="_blank">${p.url}</a>
+                </div>
+            `;
+            return row;
+        }
 
         function openCanvas(jobId, origin, depth, status) {
             canvasJobId = jobId;
+            canvasLastTotal = 0;
+            canvasCurrentOffset = 0;
             document.getElementById('canvasTitle').textContent = `Job #${jobId}`;
             document.getElementById('canvasMeta').innerHTML =
                 `Origin: <a href="${origin}" target="_blank" style="color:#667eea">${origin}</a><br>` +
@@ -532,12 +549,13 @@
             // Live-poll if job is running
             clearInterval(canvasPolling);
             if (status === 'running') {
-                canvasPolling = setInterval(() => loadCanvasPages(0, true), 2000);
+                canvasPolling = setInterval(() => loadCanvasPages(canvasCurrentOffset, true), 2000);
             }
         }
 
         function closeCanvas() {
             canvasJobId = null;
+            canvasLastTotal = 0;
             clearInterval(canvasPolling);
             canvasPolling = null;
             document.getElementById('canvasOverlay').classList.remove('open');
@@ -558,8 +576,9 @@
                 const data = await res.json();
 
                 if (canvasJobId !== jobId) return; // user closed/switched
+                canvasCurrentOffset = offset;
 
-                // Stats bar
+                // Stats bar — always update (just text, no blink)
                 const statusClass = data.status === 'running' ? 'status-running' :
                                    data.status === 'completed' ? 'status-completed' : 'status-cancelled';
                 document.getElementById('canvasStats').innerHTML = `
@@ -574,23 +593,39 @@
                     canvasPolling = null;
                 }
 
-                // URL list
                 const body = document.getElementById('canvasBody');
-                if (data.pages.length === 0) {
-                    body.innerHTML = '<div class="empty-state">No pages crawled yet</div>';
-                } else {
-                    body.innerHTML = data.pages.map(p => `
-                        <div class="url-row">
-                            <span class="depth-badge">d${p.depth}</span>
-                            <div style="flex:1;min-width:0;">
-                                <div class="url-title">${escapeHtml(p.title || 'Untitled')}</div>
-                                <a href="${p.url}" target="_blank">${p.url}</a>
-                            </div>
-                        </div>
-                    `).join('');
 
-                    // Scroll to top on page change (but not on live-poll refresh)
-                    if (!isLivePoll) body.scrollTop = 0;
+                // On live-poll: only update if total changed (new pages arrived)
+                if (isLivePoll && data.total === canvasLastTotal) {
+                    // Nothing new — skip DOM update entirely
+                    return;
+                }
+
+                // On live-poll with new data on page 1: prepend only new items
+                if (isLivePoll && offset === 0 && canvasLastTotal > 0 && data.total > canvasLastTotal) {
+                    const newCount = data.total - canvasLastTotal;
+                    const newPages = data.pages.slice(0, Math.min(newCount, data.pages.length));
+                    // Prepend new rows at the top
+                    const fragment = document.createDocumentFragment();
+                    newPages.forEach(p => fragment.appendChild(renderUrlRow(p)));
+                    body.insertBefore(fragment, body.firstChild);
+                    // Trim excess rows to keep at CANVAS_LIMIT
+                    while (body.children.length > CANVAS_LIMIT) {
+                        body.removeChild(body.lastChild);
+                    }
+                    canvasLastTotal = data.total;
+                } else {
+                    // Full render (first load or page change)
+                    canvasLastTotal = data.total;
+                    if (data.pages.length === 0) {
+                        body.innerHTML = '<div class="empty-state">No pages crawled yet</div>';
+                    } else {
+                        body.innerHTML = '';
+                        const fragment = document.createDocumentFragment();
+                        data.pages.forEach(p => fragment.appendChild(renderUrlRow(p)));
+                        body.appendChild(fragment);
+                        if (!isLivePoll) body.scrollTop = 0;
+                    }
                 }
 
                 // Pagination
@@ -600,7 +635,7 @@
                 if (hasMore || hasPrev) {
                     pag.innerHTML = `
                         ${hasPrev ? `<button class="secondary" onclick="loadCanvasPages(${offset - CANVAS_LIMIT})" style="padding:4px 12px;font-size:12px">Previous</button>` : ''}
-                        <span>${offset + 1}–${offset + data.pages.length} of ${data.total}</span>
+                        <span>${offset + 1}–${Math.min(offset + CANVAS_LIMIT, data.total)} of ${data.total}</span>
                         ${hasMore ? `<button class="secondary" onclick="loadCanvasPages(${offset + CANVAS_LIMIT})" style="padding:4px 12px;font-size:12px">Next</button>` : ''}
                     `;
                 } else {
