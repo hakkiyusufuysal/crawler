@@ -169,6 +169,37 @@ class Storage:
             )
             self._write_conn.commit()
 
+    def get_pages_by_job(self, job_id: int, limit: int = 100, offset: int = 0) -> dict:
+        """Return paginated list of pages crawled by a specific job."""
+        conn = self._read_conn()
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM pages WHERE crawl_job_id=?", (job_id,)
+            ).fetchone()[0]
+
+            rows = conn.execute(
+                "SELECT url, title, depth, crawled_at FROM pages "
+                "WHERE crawl_job_id=? ORDER BY crawled_at DESC LIMIT ? OFFSET ?",
+                (job_id, limit, offset),
+            ).fetchall()
+
+            return {
+                "pages": [
+                    {
+                        "url": r["url"],
+                        "title": r["title"] or "",
+                        "depth": r["depth"],
+                        "crawled_at": r["crawled_at"],
+                    }
+                    for r in rows
+                ],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        finally:
+            conn.close()
+
     def total_pages(self) -> int:
         """Return total number of indexed pages."""
         conn = self._read_conn()

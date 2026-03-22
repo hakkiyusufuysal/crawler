@@ -114,6 +114,95 @@
 
         .empty-state { text-align: center; padding: 40px; color: #555; }
 
+        /* Slide-over canvas */
+        .canvas-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        .canvas-overlay.open { opacity: 1; pointer-events: all; }
+
+        .canvas-panel {
+            position: fixed; top: 0; right: -520px; bottom: 0;
+            width: 520px;
+            background: #12122a;
+            border-left: 1px solid #2a2a4a;
+            z-index: 1000;
+            transition: right 0.3s;
+            display: flex; flex-direction: column;
+        }
+        .canvas-panel.open { right: 0; }
+
+        .canvas-header {
+            padding: 20px;
+            border-bottom: 1px solid #2a2a4a;
+            display: flex; justify-content: space-between; align-items: flex-start;
+        }
+        .canvas-header h3 {
+            font-size: 16px; color: #e0e0e0; margin-bottom: 4px;
+        }
+        .canvas-header .canvas-meta { font-size: 12px; color: #888; line-height: 1.6; }
+        .canvas-close {
+            background: none; border: none; color: #888;
+            font-size: 24px; cursor: pointer; padding: 0; line-height: 1;
+        }
+        .canvas-close:hover { color: #e0e0e0; }
+
+        .canvas-stats {
+            padding: 12px 20px;
+            background: #1a1a2e;
+            border-bottom: 1px solid #2a2a4a;
+            display: flex; gap: 24px;
+            font-size: 13px;
+        }
+        .canvas-stats .stat-val { font-weight: 700; color: #667eea; }
+
+        .canvas-body {
+            flex: 1; overflow-y: auto; padding: 0;
+        }
+        .canvas-body .url-row {
+            padding: 10px 20px;
+            border-bottom: 1px solid #1e1e3a;
+            font-size: 13px;
+            display: flex; align-items: baseline; gap: 10px;
+            animation: fadeIn 0.3s;
+        }
+        .canvas-body .url-row:hover { background: #1a1a2e; }
+        .canvas-body .url-row .depth-badge {
+            flex-shrink: 0;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #888;
+        }
+        .canvas-body .url-row .url-title {
+            color: #ccc; font-weight: 500;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            flex: 1; min-width: 0;
+        }
+        .canvas-body .url-row a {
+            color: #667eea; text-decoration: none;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            display: block; font-size: 11px; margin-top: 2px;
+        }
+        .canvas-body .url-row a:hover { text-decoration: underline; }
+
+        .canvas-pagination {
+            padding: 12px 20px;
+            border-top: 1px solid #2a2a4a;
+            display: flex; justify-content: center; gap: 8px; align-items: center;
+            font-size: 12px; color: #888;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
+
+        /* Make job rows clickable */
+        tr.job-row { cursor: pointer; transition: background 0.15s; }
+        tr.job-row:hover { background: #1e1e3a; }
+
         /* Queue depth bar */
         .queue-bar {
             display: flex;
@@ -228,6 +317,23 @@
         </div>
     </div>
 
+    <!-- Job Detail Canvas -->
+    <div class="canvas-overlay" id="canvasOverlay" onclick="closeCanvas()"></div>
+    <div class="canvas-panel" id="canvasPanel">
+        <div class="canvas-header">
+            <div>
+                <h3 id="canvasTitle">Job #1</h3>
+                <div class="canvas-meta" id="canvasMeta"></div>
+            </div>
+            <button class="canvas-close" onclick="closeCanvas()">&times;</button>
+        </div>
+        <div class="canvas-stats" id="canvasStats"></div>
+        <div class="canvas-body" id="canvasBody">
+            <div class="empty-state">Loading...</div>
+        </div>
+        <div class="canvas-pagination" id="canvasPagination"></div>
+    </div>
+
     <script>
         const API = '';
 
@@ -300,14 +406,14 @@
                         ? `<button class="secondary" onclick="resumeJob(${j.id})" style="padding:4px 10px;font-size:12px">Resume</button>`
                         : '—');
 
-                return `<tr>
+                return `<tr class="job-row" onclick="openCanvas(${j.id}, '${escapeHtml(j.origin)}', ${j.max_depth}, '${status}')">
                     <td>${j.id}</td>
-                    <td class="truncate"><a href="${j.origin}" target="_blank">${j.origin}</a></td>
+                    <td class="truncate"><a href="${j.origin}" target="_blank" onclick="event.stopPropagation()">${j.origin}</a></td>
                     <td>${j.max_depth}</td>
                     <td>${crawled}</td>
                     <td>${queued}</td>
                     <td><span class="status-badge ${statusClass}">${status}</span></td>
-                    <td>${actions}</td>
+                    <td onclick="event.stopPropagation()">${actions}</td>
                 </tr>`;
             }).join('');
         }
@@ -401,6 +507,108 @@
             const d = document.createElement('div');
             d.textContent = text;
             return d.innerHTML;
+        }
+
+        // ── Job Detail Canvas ──
+        let canvasJobId = null;
+        let canvasPolling = null;
+        const CANVAS_LIMIT = 50;
+
+        function openCanvas(jobId, origin, depth, status) {
+            canvasJobId = jobId;
+            document.getElementById('canvasTitle').textContent = `Job #${jobId}`;
+            document.getElementById('canvasMeta').innerHTML =
+                `Origin: <a href="${origin}" target="_blank" style="color:#667eea">${origin}</a><br>` +
+                `Max depth: ${depth}`;
+            document.getElementById('canvasBody').innerHTML = '<div class="empty-state">Loading...</div>';
+            document.getElementById('canvasPagination').innerHTML = '';
+            document.getElementById('canvasStats').innerHTML = '';
+
+            document.getElementById('canvasOverlay').classList.add('open');
+            document.getElementById('canvasPanel').classList.add('open');
+
+            loadCanvasPages(0);
+
+            // Live-poll if job is running
+            clearInterval(canvasPolling);
+            if (status === 'running') {
+                canvasPolling = setInterval(() => loadCanvasPages(0, true), 2000);
+            }
+        }
+
+        function closeCanvas() {
+            canvasJobId = null;
+            clearInterval(canvasPolling);
+            canvasPolling = null;
+            document.getElementById('canvasOverlay').classList.remove('open');
+            document.getElementById('canvasPanel').classList.remove('open');
+        }
+
+        // Close on Escape key
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && canvasJobId !== null) closeCanvas();
+        });
+
+        async function loadCanvasPages(offset = 0, isLivePoll = false) {
+            if (canvasJobId === null) return;
+            const jobId = canvasJobId;
+
+            try {
+                const res = await fetch(`${API}/jobs/${jobId}/pages?limit=${CANVAS_LIMIT}&offset=${offset}`);
+                const data = await res.json();
+
+                if (canvasJobId !== jobId) return; // user closed/switched
+
+                // Stats bar
+                const statusClass = data.status === 'running' ? 'status-running' :
+                                   data.status === 'completed' ? 'status-completed' : 'status-cancelled';
+                document.getElementById('canvasStats').innerHTML = `
+                    <div><span class="stat-val">${data.pages_crawled}</span> pages crawled</div>
+                    <div><span class="stat-val">${data.total}</span> stored</div>
+                    <div><span class="status-badge ${statusClass}">${data.status}</span></div>
+                `;
+
+                // Stop live-polling if job finished
+                if (data.status !== 'running' && canvasPolling) {
+                    clearInterval(canvasPolling);
+                    canvasPolling = null;
+                }
+
+                // URL list
+                const body = document.getElementById('canvasBody');
+                if (data.pages.length === 0) {
+                    body.innerHTML = '<div class="empty-state">No pages crawled yet</div>';
+                } else {
+                    body.innerHTML = data.pages.map(p => `
+                        <div class="url-row">
+                            <span class="depth-badge">d${p.depth}</span>
+                            <div style="flex:1;min-width:0;">
+                                <div class="url-title">${escapeHtml(p.title || 'Untitled')}</div>
+                                <a href="${p.url}" target="_blank">${p.url}</a>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    // Scroll to top on page change (but not on live-poll refresh)
+                    if (!isLivePoll) body.scrollTop = 0;
+                }
+
+                // Pagination
+                const pag = document.getElementById('canvasPagination');
+                const hasMore = (offset + data.pages.length) < data.total;
+                const hasPrev = offset > 0;
+                if (hasMore || hasPrev) {
+                    pag.innerHTML = `
+                        ${hasPrev ? `<button class="secondary" onclick="loadCanvasPages(${offset - CANVAS_LIMIT})" style="padding:4px 12px;font-size:12px">Previous</button>` : ''}
+                        <span>${offset + 1}–${offset + data.pages.length} of ${data.total}</span>
+                        ${hasMore ? `<button class="secondary" onclick="loadCanvasPages(${offset + CANVAS_LIMIT})" style="padding:4px 12px;font-size:12px">Next</button>` : ''}
+                    `;
+                } else {
+                    pag.innerHTML = data.total > 0 ? `<span>${data.total} pages</span>` : '';
+                }
+            } catch (e) {
+                console.error('Canvas load failed:', e);
+            }
         }
 
         // Start polling

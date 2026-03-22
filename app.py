@@ -131,6 +131,30 @@ def cancel_job(job_id):
     return jsonify({"message": f"Job {job_id} marked cancelled"})
 
 
+@app.get("/jobs/<int:job_id>/pages")
+def job_pages(job_id):
+    """Return pages crawled by a specific job, with pagination."""
+    job_info = storage.get_job(job_id)
+    if not job_info:
+        return jsonify({"error": "Job not found"}), 404
+
+    limit = min(int(request.args.get("limit", 100)), 500)
+    offset = max(int(request.args.get("offset", 0)), 0)
+
+    try:
+        data = storage.get_pages_by_job(job_id, limit=limit, offset=offset)
+        return jsonify({
+            "job_id": job_id,
+            "origin": job_info["origin"],
+            "status": job_info["status"],
+            "pages_crawled": job_info["pages_crawled"],
+            **data,
+        })
+    except Exception as e:
+        logger.error(f"Error fetching pages for job {job_id}: {e}")
+        return jsonify({"error": "Failed to fetch pages"}), 500
+
+
 @app.get("/jobs/<int:job_id>/resume")
 def resume_job(job_id):
     job_info = storage.get_job(job_id)
