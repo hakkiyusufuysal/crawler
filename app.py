@@ -1,13 +1,18 @@
 """
 Web Crawler & Search Engine — Flask API + Dashboard
 
+This is the entry point. Flask is the ONLY external dependency —
+all core crawling, parsing, and search logic uses Python stdlib.
+
 Endpoints:
-  POST /index       — Start a crawl job {origin, k}
-  GET  /search      — Search indexed pages ?q=...
-  GET  /status      — System metrics (JSON)
-  GET  /jobs        — List all crawl jobs
-  DELETE /jobs/<id> — Cancel a crawl job
-  GET  /            — Dashboard UI
+  POST /index            — Start a crawl job {origin, k}
+  GET  /search           — Search indexed pages ?q=...&limit=N&offset=N
+  GET  /status           — System metrics (JSON)
+  GET  /jobs             — List all crawl jobs
+  GET  /jobs/<id>/pages  — Pages crawled by a specific job
+  DELETE /jobs/<id>      — Cancel a crawl job
+  GET  /jobs/<id>/resume — Resume a cancelled/interrupted job
+  GET  /                 — Dashboard UI
 """
 
 import logging
@@ -21,6 +26,10 @@ from crawler.indexer import Indexer
 from crawler.searcher import Searcher
 
 # ── Setup ──
+# Three components are injected here:
+# 1. Storage  — SQLite persistence layer (WAL mode for concurrent read/write)
+# 2. Indexer  — Concurrent crawler with thread pool + back pressure
+# 3. Searcher — TF-IDF search over the inverted index
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,11 +40,14 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, static_folder="static")
 
 storage = Storage()
+# Back pressure config: 10 threads max, 10K queue limit, 2 req/sec per domain
 indexer = Indexer(storage, max_workers=10, max_queue_depth=10_000, rate_per_domain=2.0)
 searcher = Searcher(storage)
 
 
 # ── Graceful shutdown ──
+# On SIGINT/SIGTERM: persist frontier state so crawls can be resumed later.
+# This is what makes the "Resume" button work after interruption.
 
 def handle_shutdown(signum, frame):
     logger.info("Shutting down — saving state...")
@@ -57,6 +69,12 @@ def dashboard():
 
 @app.post("/index")
 def start_index():
+    """Start a new crawl job.
+
+    Accepts {origin: "url", k: depth} where k is the max number of hops
+    from the origin URL. k=0 crawls only the origin, k=1 also crawls
+    pages linked from the origin, etc. Capped at k=10 to prevent runaway crawls.
+    """
     data = request.get_json(force=True)
     origin = data.get("origin", "").strip()
     k = data.get("k", 2)
@@ -86,6 +104,15 @@ def start_index():
 
 @app.get("/search")
 def search():
+    """Search indexed pages using TF-IDF scoring.
+
+    This endpoint works WHILE indexing is active — new pages become
+    searchable immediately after being committed to SQLite (WAL mode
+    allows concurrent reads and writes without blocking).
+
+    Supports pagination via ?limit=N&offset=N (max 200 per page).
+    Returns (relevant_url, origin_url, depth) triples sorted by score.
+    """
     query = request.args.get("q", "").strip()
     if not query:
         return jsonify({"error": "query parameter 'q' is required"}), 400

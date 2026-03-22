@@ -33,6 +33,11 @@ from .storage import Storage
 logger = logging.getLogger(__name__)
 
 # ── Tokenizer (language-native, no nltk/spacy) ──
+# We intentionally avoid NLP libraries. Tokenization is simple:
+# 1. Lowercase everything
+# 2. Extract alphanumeric tokens (min 2 chars) via regex
+# 3. Filter out common English stop words to improve search relevancy
+#    (e.g., "the", "is", "and" would match almost every page otherwise)
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 _STOP_WORDS = frozenset([
@@ -49,25 +54,35 @@ _STOP_WORDS = frozenset([
 
 
 def tokenize(text: str) -> list[str]:
+    """Convert text into searchable tokens. Used by both indexer and searcher."""
     return [w for w in _TOKEN_RE.findall(text.lower()) if w not in _STOP_WORDS]
 
 
 # ── Per-domain rate limiter (token bucket) ──
+# Back pressure layer 3: Prevents overloading any single host.
+# Each domain gets its own token bucket — at most `rate` requests/sec.
+# This is "polite crawling": we don't want to DDoS target websites.
+#
+# How it works:
+# - Track last request time per domain
+# - If too soon since last request, sleep until the interval passes
+# - Lock ensures thread-safe access (multiple workers may hit same domain)
 
 class DomainRateLimiter:
     """Token-bucket rate limiter keyed by domain."""
 
     def __init__(self, rate: float = 2.0):
-        """rate: max requests per second per domain."""
+        """rate: max requests per second per domain (default: 2 req/sec)."""
         self._rate = rate
         self._lock = threading.Lock()
         self._last_request: dict[str, float] = {}
 
     def wait(self, domain: str):
+        """Block the calling thread until a request to this domain is allowed."""
         with self._lock:
             now = time.monotonic()
             last = self._last_request.get(domain, 0)
-            min_interval = 1.0 / self._rate
+            min_interval = 1.0 / self._rate  # e.g., 0.5s for 2 req/sec
             wait_time = max(0, min_interval - (now - last))
             self._last_request[domain] = now + wait_time
 
@@ -302,46 +317,63 @@ class Indexer:
         logger.info(f"Job {job.job_id} {status}: {job.pages_crawled} pages crawled")
 
     def _process_url(self, job: CrawlJob, work_queue: queue.Queue, url: str, depth: int):
-        """Fetch, parse, index a single URL."""
-        # Check visited
+        """Fetch, parse, index a single URL.
+
+        This is the core pipeline — each worker thread runs this for every URL:
+        1. Dedup check   → skip if already visited (Lock-protected set)
+        2. Robots check  → respect robots.txt rules
+        3. Rate limit    → wait for per-domain token bucket
+        4. Fetch         → HTTP GET with retry + SSL fallback
+        5. Parse         → extract title, text, links (stdlib html.parser)
+        6. Store         → save page content to SQLite
+        7. Index         → build inverted index entries (TF per token)
+        8. Enqueue       → add discovered links to queue (bounded — back pressure)
+        """
+        # Step 1: Check visited set — Lock prevents race condition where
+        # two threads check the same URL simultaneously and both proceed.
+        # The "check-then-add" must be atomic.
         with self._visited_lock:
             visited = self._visited.get(job.job_id, set())
             if url in visited:
                 return
             visited.add(url)
 
-        # Check robots.txt
+        # Step 2: Respect robots.txt — cached per domain
         if not self._robots.can_fetch(url):
             logger.debug(f"Blocked by robots.txt: {url}")
             return
 
-        # Rate limit per domain
+        # Step 3: Per-domain rate limiting (back pressure layer 3)
+        # This sleep ensures we don't overwhelm any single host
         domain = urllib.parse.urlparse(url).netloc
         self._rate_limiter.wait(domain)
         job.is_throttled = True
 
-        # Fetch
+        # Step 4: Fetch the page (with retry + exponential backoff)
         html = self._fetch(url)
         job.is_throttled = False
         if html is None:
             return
 
-        # Parse
+        # Step 5: Parse HTML — extract title, visible text, and links
         title, text, links = parse_html(html, url)
 
-        # Store page
+        # Step 6: Persist page content to SQLite
         self.storage.save_page(url, title, text, links, job.job_id, depth)
         job.pages_crawled += 1
 
-        # Build inverted index for this page
+        # Step 7: Build inverted index (token → URL, TF score, field)
+        # This is what makes search work — each token maps to the pages it appears in
         self._index_page(url, title, text)
 
-        # Update job metrics
+        # Update job metrics (every 10 pages to reduce DB writes)
         job.pages_queued = work_queue.qsize()
         if job.pages_crawled % 10 == 0:
             self.storage.update_job_counts(job.job_id, job.pages_crawled, job.pages_queued)
 
-        # Enqueue discovered links (if within depth)
+        # Step 8: Enqueue discovered links (if within depth limit)
+        # Back pressure layer 1: bounded queue — when full, URLs are DROPPED (not blocked)
+        # This prevents memory from growing unboundedly on link-heavy pages
         if depth < job.max_depth:
             with self._visited_lock:
                 visited = self._visited.get(job.job_id, set())
@@ -352,10 +384,11 @@ class Indexer:
                         work_queue.put_nowait((link, depth + 1))
                         frontier_batch.append((link, depth + 1, job.job_id))
                     except queue.Full:
-                        # Back pressure: drop URL when queue is full
+                        # Queue is full — drop remaining URLs (back pressure)
                         job.is_throttled = True
                         break
-            # Persist frontier for resumability
+            # Persist frontier every 50 pages for resumability
+            # If the process is interrupted, we can reload these URLs on resume
             if frontier_batch and job.pages_crawled % 50 == 0:
                 self.storage.save_frontier(frontier_batch)
 
@@ -437,14 +470,28 @@ class Indexer:
         return None
 
     def _index_page(self, url: str, title: str, text: str):
-        """Build inverted index entries for a page."""
-        # Tokenize title and body
+        """Build inverted index entries for a page.
+
+        For each unique token in the page, we compute Term Frequency (TF):
+          TF = occurrences_of_token / total_tokens_in_field
+
+        We store TF separately for "title" and "body" fields.
+        At search time, title matches get a 3x boost (see storage.search).
+
+        Example: A page with title "Python Tutorial" and body "Learn python basics"
+        would produce entries like:
+          ("python", url, 0.5, "title")   — 1 out of 2 title tokens
+          ("tutorial", url, 0.5, "title")
+          ("learn", url, 0.33, "body")    — 1 out of 3 body tokens
+          ("python", url, 0.33, "body")
+          ("basics", url, 0.33, "body")
+        """
         title_tokens = tokenize(title)
         body_tokens = tokenize(text)
 
         entries = []
 
-        # Title TF
+        # Title TF — these get 3x weight at search time
         title_counts = Counter(title_tokens)
         title_len = max(len(title_tokens), 1)
         for token, count in title_counts.items():

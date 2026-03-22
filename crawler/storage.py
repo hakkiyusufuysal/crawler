@@ -1,6 +1,16 @@
 """
 SQLite persistence layer.
-Uses WAL mode for concurrent reads (search) during writes (indexing).
+
+Why SQLite + WAL?
+  - WAL (Write-Ahead Logging) mode allows concurrent readers and a single writer.
+  - The indexer writes new pages while the searcher reads — they don't block each other.
+  - This is the key to "search while indexing is active" requirement.
+  - No external DB setup needed — just a file on disk.
+
+Threading model:
+  - ONE write connection shared across all threads, protected by _write_lock
+  - Each read operation creates its OWN connection (WAL allows unlimited concurrent reads)
+  - This pattern gives us safe concurrent access without connection pooling complexity
 """
 
 import json
@@ -14,6 +24,13 @@ DB_PATH = Path("crawler_data.db")
 
 
 def get_connection(path: Path = DB_PATH) -> sqlite3.Connection:
+    """Create a new SQLite connection with WAL mode enabled.
+
+    Key PRAGMAs:
+    - journal_mode=WAL: enables concurrent read/write (core requirement)
+    - synchronous=NORMAL: faster writes (safe with WAL — data survives OS crash)
+    - busy_timeout=5000: wait up to 5s for locks instead of failing immediately
+    """
     conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -23,7 +40,14 @@ def get_connection(path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection):
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist.
+
+    Schema:
+    - pages: crawled page content (url, title, body, links)
+    - crawl_jobs: job metadata (origin, depth, status, counters)
+    - frontier: pending URLs for resumability (persisted queue state)
+    - inverted_index: token → URL mapping with TF scores (the search index)
+    """
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS pages (
             url TEXT PRIMARY KEY,
@@ -68,16 +92,23 @@ def init_db(conn: sqlite3.Connection):
 
 
 class Storage:
-    """Thread-safe storage layer wrapping SQLite."""
+    """Thread-safe storage layer wrapping SQLite.
+
+    Concurrency pattern:
+    - Single _write_conn protected by _write_lock (SQLite allows 1 writer)
+    - Each read creates a fresh connection via _read_conn() (WAL allows N readers)
+    - Readers never block the writer, writer never blocks readers
+    """
 
     def __init__(self, path: Path = DB_PATH):
         self.path = path
         self._write_conn = get_connection(path)
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.Lock()  # Serialize all write operations
         init_db(self._write_conn)
 
     def _read_conn(self) -> sqlite3.Connection:
-        """Create a new read connection (WAL allows concurrent reads)."""
+        """Create a new read connection. Each call gets its own connection
+        so multiple search queries can run concurrently without blocking."""
         return get_connection(self.path)
 
     # ── Crawl Jobs ──
@@ -220,8 +251,17 @@ class Storage:
             self._write_conn.commit()
 
     def search(self, tokens: list[str], limit: int = 50, offset: int = 0) -> dict:
-        """
-        Search the inverted index using TF-IDF scoring.
+        """Search the inverted index using TF-IDF scoring.
+
+        TF-IDF algorithm:
+        1. For each query token, compute IDF = log(total_docs / docs_containing_token)
+           → Rare words get higher IDF (more discriminating)
+           → Common words get lower IDF (less useful for ranking)
+        2. For each matching document: score += TF × IDF × weight
+           → TF comes from the inverted index (precomputed at index time)
+           → weight = 3.0 for title matches, 1.0 for body matches
+        3. Sort all matching docs by total score, then paginate
+
         Returns {results: [...], total: int, limit: int, offset: int}.
         """
         if not tokens:
