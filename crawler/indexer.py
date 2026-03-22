@@ -384,26 +384,6 @@ class Indexer:
                     charset = resp.headers.get_content_charset() or "utf-8"
                     return data.decode(charset, errors="replace")
 
-            except ssl.SSLCertVerificationError:
-                # Retry once with lenient SSL context
-                logger.debug(f"SSL cert error for {url}, retrying without verification")
-                try:
-                    req = urllib.request.Request(
-                        url, headers={"User-Agent": self.USER_AGENT},
-                    )
-                    with urllib.request.urlopen(
-                        req, timeout=self.request_timeout, context=self._ssl_ctx_lenient
-                    ) as resp:
-                        content_type = resp.headers.get("Content-Type", "")
-                        if "text/html" not in content_type and "text/xhtml" not in content_type:
-                            return None
-                        data = resp.read(2 * 1024 * 1024)
-                        charset = resp.headers.get_content_charset() or "utf-8"
-                        return data.decode(charset, errors="replace")
-                except Exception as e:
-                    logger.debug(f"SSL fallback also failed {url}: {e}")
-                    return None
-
             except urllib.error.HTTPError as e:
                 last_error = e
                 # Retry on 429 (rate limited) and 5xx (server errors)
@@ -417,6 +397,31 @@ class Indexer:
                 return None
 
             except (urllib.error.URLError, OSError, ValueError) as e:
+                # Check if underlying cause is an SSL cert error
+                # (urllib wraps ssl.SSLCertVerificationError inside URLError)
+                cause = getattr(e, 'reason', None)
+                is_ssl = isinstance(cause, ssl.SSLCertVerificationError) or (
+                    isinstance(e, OSError) and 'CERTIFICATE_VERIFY_FAILED' in str(e)
+                )
+                if is_ssl:
+                    logger.debug(f"SSL cert error for {url}, retrying without verification")
+                    try:
+                        req = urllib.request.Request(
+                            url, headers={"User-Agent": self.USER_AGENT},
+                        )
+                        with urllib.request.urlopen(
+                            req, timeout=self.request_timeout, context=self._ssl_ctx_lenient
+                        ) as resp:
+                            content_type = resp.headers.get("Content-Type", "")
+                            if "text/html" not in content_type and "text/xhtml" not in content_type:
+                                return None
+                            data = resp.read(2 * 1024 * 1024)
+                            charset = resp.headers.get_content_charset() or "utf-8"
+                            return data.decode(charset, errors="replace")
+                    except Exception as e2:
+                        logger.debug(f"SSL fallback also failed {url}: {e2}")
+                        return None
+
                 last_error = e
                 # Network errors — retry with backoff
                 wait = min(2 ** attempt, 8)
