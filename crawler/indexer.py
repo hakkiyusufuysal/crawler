@@ -474,6 +474,7 @@ class Indexer:
             ]
 
     def cancel_job(self, job_id: int) -> bool:
+        """Cancel an active crawl job. Returns True if the job was found and cancelled."""
         with self._jobs_lock:
             job = self._active_jobs.get(job_id)
             if job:

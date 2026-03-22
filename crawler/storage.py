@@ -83,6 +83,7 @@ class Storage:
     # ── Crawl Jobs ──
 
     def create_job(self, origin: str, max_depth: int) -> int:
+        """Insert a new crawl job record and return its ID."""
         with self._write_lock:
             cur = self._write_conn.execute(
                 "INSERT INTO crawl_jobs (origin, max_depth, created_at) VALUES (?, ?, ?)",
@@ -92,6 +93,7 @@ class Storage:
             return cur.lastrowid
 
     def update_job_counts(self, job_id: int, crawled: int, queued: int):
+        """Update live crawl/queue counters for a running job."""
         with self._write_lock:
             self._write_conn.execute(
                 "UPDATE crawl_jobs SET pages_crawled=?, pages_queued=? WHERE id=?",
@@ -100,6 +102,7 @@ class Storage:
             self._write_conn.commit()
 
     def finish_job(self, job_id: int, status: str = "completed"):
+        """Mark a crawl job as finished with given status."""
         with self._write_lock:
             self._write_conn.execute(
                 "UPDATE crawl_jobs SET status=?, finished_at=? WHERE id=?",
@@ -108,6 +111,7 @@ class Storage:
             self._write_conn.commit()
 
     def get_jobs(self) -> list[dict]:
+        """Return all crawl jobs, most recent first."""
         conn = self._read_conn()
         try:
             rows = conn.execute(
@@ -118,6 +122,7 @@ class Storage:
             conn.close()
 
     def get_job(self, job_id: int) -> dict | None:
+        """Return a single crawl job by ID, or None if not found."""
         conn = self._read_conn()
         try:
             row = conn.execute(
@@ -128,6 +133,7 @@ class Storage:
             conn.close()
 
     def cancel_job(self, job_id: int):
+        """Mark a job as cancelled and clear its saved frontier."""
         with self._write_lock:
             self._write_conn.execute(
                 "UPDATE crawl_jobs SET status='cancelled', finished_at=? WHERE id=?",
@@ -141,6 +147,7 @@ class Storage:
     # ── Pages ──
 
     def page_exists(self, url: str) -> bool:
+        """Check whether a URL has already been indexed."""
         conn = self._read_conn()
         try:
             row = conn.execute(
@@ -152,6 +159,7 @@ class Storage:
 
     def save_page(self, url: str, title: str, body_text: str,
                   links: list[str], job_id: int, depth: int):
+        """Persist a crawled page (upsert by URL)."""
         with self._write_lock:
             self._write_conn.execute(
                 """INSERT OR REPLACE INTO pages
@@ -162,6 +170,7 @@ class Storage:
             self._write_conn.commit()
 
     def total_pages(self) -> int:
+        """Return total number of indexed pages."""
         conn = self._read_conn()
         try:
             return conn.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
@@ -275,6 +284,7 @@ class Storage:
             conn.close()
 
     def clear_frontier(self, job_id: int):
+        """Remove all frontier entries for a completed/cancelled job."""
         with self._write_lock:
             self._write_conn.execute(
                 "DELETE FROM frontier WHERE crawl_job_id=?", (job_id,)

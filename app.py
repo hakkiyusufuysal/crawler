@@ -106,12 +106,20 @@ def search():
 
 @app.get("/status")
 def status():
-    return jsonify(indexer.get_status())
+    try:
+        return jsonify(indexer.get_status())
+    except Exception as e:
+        logger.error(f"Error fetching status: {e}")
+        return jsonify({"error": "Failed to fetch status"}), 500
 
 
 @app.get("/jobs")
 def list_jobs():
-    return jsonify(storage.get_jobs())
+    try:
+        return jsonify(storage.get_jobs())
+    except Exception as e:
+        logger.error(f"Error listing jobs: {e}")
+        return jsonify({"error": "Failed to list jobs"}), 500
 
 
 @app.delete("/jobs/<int:job_id>")
