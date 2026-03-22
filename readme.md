@@ -1,6 +1,6 @@
 # Web Crawler & Search Engine
 
-**Demo:** [Video 1 — Crawling & Dashboard](https://github.com/hakkiyusufuysal/crawler/releases/download/v1.0/Ekran.Kay.d.2026-03-22.15.21.43.mov) | [Video 2 — Search & Resume](https://github.com/hakkiyusufuysal/crawler/releases/download/v1.0/Ekran.Kay.d.2026-03-22.15.35.21.mov)
+**Demo:** [Video 1 — Crawling & Dashboard](https://github.com/hakkiyusufuysal/crawler/releases/download/v1.0/Ekran.Kaydi.2026-03-22.15.21.43.mov) | [Video 2 — Search & Resume](https://github.com/hakkiyusufuysal/crawler/releases/download/v1.0/Ekran.Kaydi.2026-03-22.15.35.21.mov)
 
 A concurrent web crawler and real-time search engine built with Python for Brightwave. The system crawls web pages from a seed URL up to a configurable depth, indexes their content, and provides full-text search — even while crawling is still active.
 
