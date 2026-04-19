@@ -182,6 +182,107 @@ def job_pages(job_id):
         return jsonify({"error": "Failed to fetch pages"}), 500
 
 
+@app.get("/agents")
+def list_agents():
+    """Return metadata about the 6 agents that built this project.
+
+    Used by the dashboard's "Agent Work" canvas. Each agent has a role,
+    status (all completed since they ran during development), and a list
+    of artifacts they produced.
+    """
+    agents = [
+        {
+            "id": 1,
+            "name": "Research Agent",
+            "emoji": "🔬",
+            "status": "completed",
+            "role": "Surveyed web crawler best practices and trade-offs",
+            "decisions": [
+                "Threads over asyncio (stdlib urllib is sync)",
+                "SQLite + WAL over PostgreSQL (localhost, concurrent reads)",
+                "TF-IDF over BM25 (simpler, sufficient at this scale)",
+            ],
+            "artifacts": ["Research brief → fed into Architect Agent"],
+            "file": "agents/01_research_agent.md",
+        },
+        {
+            "id": 2,
+            "name": "Architect Agent",
+            "emoji": "🏛️",
+            "status": "completed",
+            "role": "Designed modules, schema, and concurrency model",
+            "decisions": [
+                "4-table SQLite schema (pages, jobs, frontier, inverted_index)",
+                "10 workers / 10K queue / 2 req/s per domain",
+                "Title × 3.0 boost at query time (not index time)",
+            ],
+            "artifacts": ["product_prd.md", "SQLite schema", "API contract"],
+            "file": "agents/02_architect_agent.md",
+        },
+        {
+            "id": 3,
+            "name": "Crawler Agent",
+            "emoji": "🕷️",
+            "status": "completed",
+            "role": "Built the indexer, parser, and frontier persistence",
+            "decisions": [
+                "Coordinator + worker threads + in-flight counter",
+                "SSL strict by default, lenient fallback on cert errors",
+                "Retry 3× on 429/5xx with exponential backoff (1s,2s,4s)",
+                "Frontier flushed every 50 pages (resume granularity)",
+            ],
+            "artifacts": ["crawler/indexer.py", "crawler/parser.py"],
+            "file": "agents/03_crawler_agent.md",
+        },
+        {
+            "id": 4,
+            "name": "Search Agent",
+            "emoji": "🔍",
+            "status": "completed",
+            "role": "Implemented TF-IDF scoring and pagination",
+            "decisions": [
+                "IDF computed at query time (adapts as corpus grows)",
+                "Fresh read connection per query (WAL-safe)",
+                "Shared tokenizer with Crawler Agent (index=query tokens)",
+                "Returns {results, total, limit, offset} for pagination",
+            ],
+            "artifacts": ["crawler/searcher.py", "storage.search()"],
+            "file": "agents/04_search_agent.md",
+        },
+        {
+            "id": 5,
+            "name": "UI Agent",
+            "emoji": "🎨",
+            "status": "completed",
+            "role": "Built the dashboard with no framework",
+            "decisions": [
+                "Single index.html (HTML + CSS + vanilla JS)",
+                "Diff-based DOM updates (fixes flicker)",
+                "Slide-in canvas for job details (non-blocking)",
+                "Per-job polling only when canvas is open",
+            ],
+            "artifacts": ["static/index.html"],
+            "file": "agents/05_ui_agent.md",
+        },
+        {
+            "id": 6,
+            "name": "Critic Agent",
+            "emoji": "🧐",
+            "status": "completed",
+            "role": "Reviewed all outputs, found 7 issues (all fixed)",
+            "decisions": [
+                "[major] SSL was off by default — made it strict",
+                "[major] No HTTP retry — added exponential backoff",
+                "[major] UI flicker — forced diff-based updates",
+                "[blocker] Real user data in git — removed, shipped sample",
+            ],
+            "artifacts": ["7 severity-graded issue reports"],
+            "file": "agents/06_critic_agent.md",
+        },
+    ]
+    return jsonify({"agents": agents, "count": len(agents)})
+
+
 @app.get("/jobs/<int:job_id>/resume")
 def resume_job(job_id):
     job_info = storage.get_job(job_id)

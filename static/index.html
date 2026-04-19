@@ -231,12 +231,15 @@
 </head>
 <body>
     <div class="container">
-        <h1>Web Crawler & Search Engine</h1>
-        <p class="subtitle">Concurrent indexer with back pressure control and real-time search</p>
-        <p class="subtitle" style="margin-top: 4px; font-size: 13px;">
-            Built with a 6-agent workflow —
-            <a href="https://github.com/hakkiyusufuysal/crawler/blob/main/AGENTS_SUMMARY.md" target="_blank" style="color: #a29bfe;">see what each agent did</a>
-        </p>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap;">
+            <div>
+                <h1>Web Crawler & Search Engine</h1>
+                <p class="subtitle">Concurrent indexer with back pressure control and real-time search</p>
+            </div>
+            <button onclick="openAgentsCanvas()" class="secondary" style="padding: 10px 18px; font-size: 13px; white-space: nowrap; cursor: pointer;">
+                🤖 View Agent Work
+            </button>
+        </div>
 
         <div class="grid">
             <!-- System Metrics -->
@@ -336,6 +339,21 @@
             <div class="empty-state">Loading...</div>
         </div>
         <div class="canvas-pagination" id="canvasPagination"></div>
+    </div>
+
+    <!-- Agents Canvas -->
+    <div class="canvas-overlay" id="agentsOverlay" onclick="closeAgentsCanvas()"></div>
+    <div class="canvas-panel" id="agentsPanel">
+        <div class="canvas-header">
+            <div>
+                <h3>🤖 Multi-Agent Workflow</h3>
+                <div class="canvas-meta">6 specialized agents built this system</div>
+            </div>
+            <button class="canvas-close" onclick="closeAgentsCanvas()">&times;</button>
+        </div>
+        <div class="canvas-body" id="agentsBody">
+            <div class="empty-state">Loading agents...</div>
+        </div>
     </div>
 
     <script>
@@ -566,9 +584,73 @@
             document.getElementById('canvasPanel').classList.remove('open');
         }
 
+        // ── Agents canvas ──
+        async function openAgentsCanvas() {
+            document.getElementById('agentsOverlay').classList.add('open');
+            document.getElementById('agentsPanel').classList.add('open');
+            const body = document.getElementById('agentsBody');
+            body.innerHTML = '<div class="empty-state">Loading agents...</div>';
+
+            try {
+                const res = await fetch(`${API}/agents`);
+                const data = await res.json();
+
+                body.innerHTML = data.agents.map(a => `
+                    <div style="padding: 16px 20px; border-bottom: 1px solid #1e1e3a;">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <span style="font-size: 22px;">${a.emoji}</span>
+                            <div style="flex: 1;">
+                                <div style="color: #e0e0e0; font-weight: 600; font-size: 14px;">
+                                    ${escapeHtml(a.name)}
+                                </div>
+                                <div style="font-size: 11px; color: #888; margin-top: 2px;">
+                                    ${escapeHtml(a.role)}
+                                </div>
+                            </div>
+                            <span class="status-badge status-completed">${a.status}</span>
+                        </div>
+
+                        <div style="margin-top: 10px;">
+                            <div style="font-size: 11px; color: #a29bfe; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+                                Key decisions
+                            </div>
+                            <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: #ccc; line-height: 1.6;">
+                                ${a.decisions.map(d => `<li>${escapeHtml(d)}</li>`).join('')}
+                            </ul>
+                        </div>
+
+                        <div style="margin-top: 10px;">
+                            <div style="font-size: 11px; color: #a29bfe; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+                                Produced
+                            </div>
+                            <div style="font-size: 12px; color: #888;">
+                                ${a.artifacts.map(x => `<code style="background:#1a1a2e;padding:2px 6px;border-radius:3px;color:#667eea;font-size:11px;">${escapeHtml(x)}</code>`).join(' ')}
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 10px; font-size: 11px;">
+                            <a href="https://github.com/hakkiyusufuysal/crawler/blob/main/${a.file}" target="_blank" style="color: #667eea; text-decoration: none;">
+                                → read full agent spec
+                            </a>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                body.innerHTML = `<div class="empty-state">Failed to load agents: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function closeAgentsCanvas() {
+            document.getElementById('agentsOverlay').classList.remove('open');
+            document.getElementById('agentsPanel').classList.remove('open');
+        }
+
         // Close on Escape key
         document.addEventListener('keydown', e => {
-            if (e.key === 'Escape' && canvasJobId !== null) closeCanvas();
+            if (e.key === 'Escape') {
+                if (canvasJobId !== null) closeCanvas();
+                if (document.getElementById('agentsPanel').classList.contains('open')) closeAgentsCanvas();
+            }
         });
 
         async function loadCanvasPages(offset = 0, isLivePoll = false) {
