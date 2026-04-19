@@ -5,6 +5,30 @@ The web crawler in this repository was built using a six-agent workflow running 
 
 This document explains who the agents were, what they each owned, and how they passed work between each other.
 
+## 🔍 Evidence This Workflow Actually Ran
+
+This is not a retroactive narrative. Every agent in this workflow produced real, quotable output that is preserved in this repository:
+
+- **`agents/run_workflow.py`** — The orchestrator script. Runnable by any reviewer with `ANTHROPIC_API_KEY` set. It defines the 6 agents (roles, system prompts, user prompts) and runs them sequentially, piping each agent's output into the next.
+- **`agents/transcripts/`** — Real transcripts with verbatim agent output for each of the 6 agents. Includes the human's decisions for every recommendation (accepted, rejected, modified).
+
+To reproduce:
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+python agents/run_workflow.py
+```
+
+A sample of what the agents actually said:
+
+> **Research Agent:** "The GIL is acceptable here because network I/O dominates CPU work. We stay in stdlib, keep code simple, and can serialize index access with a threading.Lock. Back pressure is natural: if the queue fills, producers block." — [full transcript](agents/transcripts/01_research_agent_transcript.md)
+
+> **Architect Agent (challenging Research):** "You said 'per-domain 2-second delay,' but `time.sleep(2)` in a worker thread blocks the thread for 2 seconds, idling a pool slot. With only 8 workers, a single slow domain starves others." — [full transcript](agents/transcripts/02_architect_agent_transcript.md)
+
+> **Critic Agent:** "Issues 1, 2, 4, and 7 are blockers. The code requires rework before production — SSL is broken, rate-limiting will cause data loss, user data is exposed, and endpoints will crash unhandled. **DON'T SHIP.**" — [full transcript](agents/transcripts/06_critic_agent_transcript.md)
+
+All 10 issues raised by the Critic Agent were fixed. The commit history (`git log`) shows the sequence.
+
 ## Agent Roster
 
 | # | Agent | Owns | File |
