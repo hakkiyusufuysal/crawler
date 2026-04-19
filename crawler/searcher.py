@@ -11,8 +11,9 @@ Supports concurrent search while indexing is active:
   - Newly indexed pages are visible to search immediately after commit
 """
 
-from .storage import Storage
 from .indexer import tokenize
+from .runtime_agents import runtime_agents
+from .storage import Storage
 
 
 class Searcher:
@@ -38,5 +39,11 @@ class Searcher:
         """
         tokens = tokenize(query)
         if not tokens:
+            runtime_agents.record("search", f"empty tokens for '{query}'")
             return {"results": [], "total": 0, "limit": limit, "offset": offset}
-        return self.storage.search(tokens, limit=limit, offset=offset)
+        result = self.storage.search(tokens, limit=limit, offset=offset)
+        runtime_agents.record(
+            "search",
+            f"'{query}' → {result['total']} hits ({len(tokens)} tokens)",
+        )
+        return result

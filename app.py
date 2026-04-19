@@ -23,6 +23,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from crawler.storage import Storage
 from crawler.indexer import Indexer
+from crawler.runtime_agents import runtime_agents
 from crawler.searcher import Searcher
 
 # ── Setup ──
@@ -180,6 +181,24 @@ def job_pages(job_id):
     except Exception as e:
         logger.error(f"Error fetching pages for job {job_id}: {e}")
         return jsonify({"error": "Failed to fetch pages"}), 500
+
+
+@app.get("/agents/live")
+def live_agents():
+    """Return real-time state of the 6 RUNTIME agents.
+
+    Unlike /agents (which describes the 6 development agents that BUILT
+    the system), this endpoint shows the 6 agents actually RUNNING NOW:
+    Fetcher, Parser, Indexer, Rate Limiter, Dedup, Search.
+
+    Each returns: current_action, action_count, is_active (event in last 5s),
+    and last 5 recent events. The dashboard polls this every 1 second.
+    """
+    try:
+        return jsonify({"agents": runtime_agents.snapshot()})
+    except Exception as e:
+        logger.error(f"Error fetching live agents: {e}")
+        return jsonify({"error": "Failed to fetch live agents"}), 500
 
 
 @app.get("/agents")

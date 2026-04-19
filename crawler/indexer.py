@@ -28,6 +28,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from .parser import parse_html
+from .runtime_agents import runtime_agents
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,10 @@ class DomainRateLimiter:
             self._last_request[domain] = now + wait_time
 
         if wait_time > 0:
+            runtime_agents.record("ratelimiter", f"throttling {domain} ({wait_time:.2f}s)")
             time.sleep(wait_time)
+        else:
+            runtime_agents.record("ratelimiter", f"pass → {domain}")
 
 
 # ── robots.txt cache ──
@@ -335,8 +339,10 @@ class Indexer:
         with self._visited_lock:
             visited = self._visited.get(job.job_id, set())
             if url in visited:
+                runtime_agents.record("dedup", f"skip (seen): {url[:60]}")
                 return
             visited.add(url)
+            runtime_agents.record("dedup", f"accept ({len(visited)} visited): {url[:50]}")
 
         # Step 2: Respect robots.txt — cached per domain
         if not self._robots.can_fetch(url):
@@ -350,13 +356,19 @@ class Indexer:
         job.is_throttled = True
 
         # Step 4: Fetch the page (with retry + exponential backoff)
+        runtime_agents.record("fetcher", f"GET {url[:70]}")
         html = self._fetch(url)
         job.is_throttled = False
         if html is None:
+            runtime_agents.record("fetcher", f"FAIL {url[:70]}")
             return
 
         # Step 5: Parse HTML — extract title, visible text, and links
         title, text, links = parse_html(html, url)
+        runtime_agents.record(
+            "parser",
+            f"{len(links)} links, {len(text)} chars from {url[:40]}",
+        )
 
         # Step 6: Persist page content to SQLite
         self.storage.save_page(url, title, text, links, job.job_id, depth)
@@ -507,6 +519,10 @@ class Indexer:
 
         if entries:
             self.storage.save_index_entries(entries)
+            runtime_agents.record(
+                "indexer",
+                f"+{len(entries)} index entries ({len(title_tokens)} title + {len(body_tokens)} body tokens)",
+            )
 
     # ── Public API ──
 

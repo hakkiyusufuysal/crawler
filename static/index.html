@@ -277,6 +277,17 @@
                 </div>
             </div>
 
+            <!-- Live Runtime Agents -->
+            <div class="card full">
+                <h2>🤖 Runtime Agents — Live Activity</h2>
+                <div style="font-size: 12px; color: #888; margin-bottom: 12px;">
+                    Six specialized agents running inside the crawler. Each handles one concern. Updated every 1 second.
+                </div>
+                <div id="liveAgentsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px;">
+                    <div class="empty-state">Loading runtime agents...</div>
+                </div>
+            </div>
+
             <!-- Start Crawl -->
             <div class="card full">
                 <h2>Start New Crawl</h2>
@@ -732,9 +743,56 @@
             }
         }
 
+        // ── Live Runtime Agents ──
+        let prevLiveAgentsJSON = '';
+        async function refreshLiveAgents() {
+            try {
+                const r = await fetch(`${API}/agents/live`);
+                const data = await r.json();
+                const nextJSON = JSON.stringify(data.agents.map(a => [a.name, a.current_action, a.action_count, a.is_active]));
+                if (nextJSON === prevLiveAgentsJSON) return; // no change → no DOM update (prevents flicker)
+                prevLiveAgentsJSON = nextJSON;
+
+                const grid = document.getElementById('liveAgentsGrid');
+                grid.innerHTML = data.agents.map(a => {
+                    const activeDot = a.is_active
+                        ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80;animation:pulse 1.5s infinite;"></span>'
+                        : '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#444;"></span>';
+                    const actionText = a.current_action === 'idle'
+                        ? '<em style="color:#666;">idle</em>'
+                        : escapeHtml(a.current_action);
+                    const ago = a.seconds_since_event !== null ? `${a.seconds_since_event}s ago` : '—';
+                    return `
+                        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px 14px;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                                ${activeDot}
+                                <span style="font-size:18px;">${a.emoji}</span>
+                                <span style="font-weight:600;color:#e0e0e0;font-size:13px;flex:1;">${escapeHtml(a.name)}</span>
+                                <span style="font-size:11px;color:#888;">${a.action_count}</span>
+                            </div>
+                            <div style="font-size:11px;color:#888;margin-bottom:6px;line-height:1.4;">
+                                ${escapeHtml(a.description)}
+                            </div>
+                            <div style="font-size:12px;color:#a29bfe;font-family:ui-monospace,SFMono-Regular,monospace;background:#1a1a2e;padding:6px 8px;border-radius:4px;word-break:break-all;min-height:30px;">
+                                ${actionText}
+                            </div>
+                            <div style="font-size:10px;color:#666;margin-top:4px;text-align:right;">${ago}</div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) { /* silent on transient errors */ }
+        }
+
+        // Add pulse animation
+        const style = document.createElement('style');
+        style.textContent = '@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }';
+        document.head.appendChild(style);
+
         // Start polling
         refreshStatus();
         setInterval(refreshStatus, 2000);
+        refreshLiveAgents();
+        setInterval(refreshLiveAgents, 1000); // 1-second cadence for runtime view
     </script>
 </body>
 </html>
